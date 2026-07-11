@@ -86,16 +86,40 @@ Do NOT repeat any of these already-used topics (pick something genuinely differe
 
 Return the result matching the required JSON schema."""
 
-    response = client.models.generate_content(
-        model=config.GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=VideoScript,
-            temperature=1.1,
-        ),
+    gen_config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_INSTRUCTION,
+        response_mime_type="application/json",
+        response_schema=VideoScript,
+        temperature=1.1,
     )
+
+    response = None
+    last_error = None
+    for model_name in config.GEMINI_MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(
+                model=model_name, contents=prompt, config=gen_config,
+            )
+            if model_name != config.GEMINI_MODEL_CANDIDATES[0]:
+                print(f"      (note: fell back to {model_name} — update "
+                      f"GEMINI_MODEL_CANDIDATES in config.py so this stops happening)")
+            break
+        except genai.errors.ClientError as e:
+            # 404 = this specific model ID was retired/never available to this
+            # key; try the next candidate. Any other error (bad key, quota,
+            # etc.) isn't fixed by switching models, so re-raise immediately.
+            if getattr(e, "code", None) == 404:
+                last_error = e
+                continue
+            raise
+
+    if response is None:
+        raise RuntimeError(
+            f"All candidate Gemini models failed (tried "
+            f"{config.GEMINI_MODEL_CANDIDATES}). Check "
+            f"https://ai.google.dev/gemini-api/docs/pricing for current free "
+            f"models and update GEMINI_MODEL_CANDIDATES in config.py."
+        ) from last_error
 
     script: VideoScript = response.parsed
     _save_topic(script.topic, script.title)
