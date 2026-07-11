@@ -8,11 +8,20 @@ from pathlib import Path
 
 # --- Secrets / API keys (set as env vars locally via .env, or as
 # GitHub Actions repo secrets in production — see README) -------------------
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
-YT_CLIENT_ID = os.environ.get("YT_CLIENT_ID", "")
-YT_CLIENT_SECRET = os.environ.get("YT_CLIENT_SECRET", "")
-YT_REFRESH_TOKEN = os.environ.get("YT_REFRESH_TOKEN", "")
+def _env(name: str) -> str:
+    """Reads an env var and strips stray whitespace/newlines. A trailing
+    newline is an easy mistake when pasting a value into a GitHub Actions
+    secret box, and it silently breaks anything that puts the value
+    straight into an HTTP header (like Pexels' Authorization header) —
+    that's what caused the 'Invalid header value' crash."""
+    return os.environ.get(name, "").strip()
+
+
+GEMINI_API_KEY = _env("GEMINI_API_KEY")
+PEXELS_API_KEY = _env("PEXELS_API_KEY")
+YT_CLIENT_ID = _env("YT_CLIENT_ID")
+YT_CLIENT_SECRET = _env("YT_CLIENT_SECRET")
+YT_REFRESH_TOKEN = _env("YT_REFRESH_TOKEN")
 
 # --- Paths -------------------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -21,13 +30,24 @@ WORK_DIR = ROOT_DIR / "work"          # scratch space, wiped each run
 TOPICS_LOG = DATA_DIR / "used_topics.json"   # history, committed back to git
 
 # --- Content / script generation ----------------------------------------
-# "gemini-2.5-flash" is the current free-tier workhorse model as of mid-2026.
-# Google's free-tier lineup shifts fairly often — if this starts failing,
-# check https://ai.google.dev/gemini-api/docs/pricing for the current
-# free-eligible model names and swap the constant below.
+# Google retires Gemini model IDs with little warning — gemini-2.5-flash,
+# what this was originally set to, started returning 404 "no longer
+# available to new users" for newly-created API keys (confirmed by your
+# July 11 2026 run). script_gen.py tries these in order and automatically
+# falls through on that specific 404, so the next retirement doesn't take
+# the whole pipeline down with it:
+#   1. "gemini-flash-latest" — an alias Google keeps pointed at whatever
+#      its current recommended flash model is (currently Gemini 3.5
+#      Flash), so this should keep working across future retirements
+#      without any edits here.
+#   2. "gemini-3.5-flash" — that same current model, pinned directly, as
+#      a fallback in case the alias itself ever has an issue.
+# If BOTH of these ever fail, check
+# https://ai.google.dev/gemini-api/docs/models for the current lineup and
+# add a working name to this list.
 GEMINI_MODEL_CANDIDATES = [
-    "gemini-flash-latest",   # Google keeps this pointed at their current model
-    "gemini-3.5-flash",      # pinned fallback if the alias ever misbehaves
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
 ]
 
 # Broad, algorithm-friendly pool. The script generator picks ONE angle per
