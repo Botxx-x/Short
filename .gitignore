@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+work/
+test_render/
+test_bg/
+*.mp3
+*.mp4
+!.github/**
