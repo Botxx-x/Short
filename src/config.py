@@ -25,7 +25,10 @@ TOPICS_LOG = DATA_DIR / "used_topics.json"   # history, committed back to git
 # Google's free-tier lineup shifts fairly often — if this starts failing,
 # check https://ai.google.dev/gemini-api/docs/pricing for the current
 # free-eligible model names and swap the constant below.
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-flash-latest",   # Google keeps this pointed at their current model
+    "gemini-3.5-flash",      # pinned fallback if the alias ever misbehaves
+]
 
 # Broad, algorithm-friendly pool. The script generator picks ONE angle per
 # video but always writes it in the same voice/format (see PROMPT below),
