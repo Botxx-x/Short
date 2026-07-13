@@ -5,6 +5,7 @@ structured JSON output.
 """
 import json
 import random
+import time
 from typing import List
 
 from google import genai
@@ -12,6 +13,15 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from . import config
+
+# Errors worth waiting out and retrying on the SAME model: 503 (server
+# overloaded — what actually happened on 13 July), 429 (rate/quota
+# limited), 500 (generic transient server error). 404 (model doesn't
+# exist for this key) is NOT in this set — no amount of waiting fixes a
+# wrong model name, so that one skips straight to the next candidate.
+RETRYABLE_CODES = {429, 500, 503}
+MAX_RETRIES_PER_MODEL = 3
+RETRY_BACKOFF_SECONDS = [20, 40, 80]
 
 
 class VideoScript(BaseModel):
@@ -67,7 +77,10 @@ def _save_topic(topic: str, title: str) -> None:
 
 
 def generate_script() -> VideoScript:
-    """Calls Gemini once and returns a fully-formed, structured video script."""
+    """Calls Gemini and returns a fully-formed, structured video script.
+    Retries transient failures (server overload, rate limits) with backoff
+    on the same model before giving up on it and trying the next candidate
+    in GEMINI_MODEL_CANDIDATES."""
     if not config.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
@@ -95,30 +108,49 @@ Return the result matching the required JSON schema."""
 
     response = None
     last_error = None
+
     for model_name in config.GEMINI_MODEL_CANDIDATES:
-        try:
-            response = client.models.generate_content(
-                model=model_name, contents=prompt, config=gen_config,
-            )
+        for attempt in range(MAX_RETRIES_PER_MODEL + 1):
+            try:
+                response = client.models.generate_content(
+                    model=model_name, contents=prompt, config=gen_config,
+                )
+                break  # success
+            except genai.errors.APIError as e:
+                code = getattr(e, "code", None)
+                last_error = e
+
+                if code == 404:
+                    # This model ID doesn't exist for this key at all —
+                    # no point retrying it, move on to the next candidate.
+                    break
+
+                if code in RETRYABLE_CODES and attempt < MAX_RETRIES_PER_MODEL:
+                    wait = RETRY_BACKOFF_SECONDS[attempt]
+                    print(f"      ({model_name} returned {code}, probably "
+                          f"temporary — retrying in {wait}s, attempt "
+                          f"{attempt + 2}/{MAX_RETRIES_PER_MODEL + 1})")
+                    time.sleep(wait)
+                    continue
+
+                # Either not a retryable code, or retries on this model
+                # are exhausted — fall through to the next candidate model.
+                break
+
+        if response is not None:
             if model_name != config.GEMINI_MODEL_CANDIDATES[0]:
                 print(f"      (note: fell back to {model_name} — update "
                       f"GEMINI_MODEL_CANDIDATES in config.py so this stops happening)")
             break
-        except genai.errors.ClientError as e:
-            # 404 = this specific model ID was retired/never available to this
-            # key; try the next candidate. Any other error (bad key, quota,
-            # etc.) isn't fixed by switching models, so re-raise immediately.
-            if getattr(e, "code", None) == 404:
-                last_error = e
-                continue
-            raise
 
     if response is None:
         raise RuntimeError(
-            f"All candidate Gemini models failed (tried "
-            f"{config.GEMINI_MODEL_CANDIDATES}). Check "
-            f"https://ai.google.dev/gemini-api/docs/pricing for current free "
-            f"models and update GEMINI_MODEL_CANDIDATES in config.py."
+            f"All candidate Gemini models failed after retries (tried "
+            f"{config.GEMINI_MODEL_CANDIDATES}). Last error: {last_error}. "
+            f"If this keeps happening across multiple runs, Google's API may "
+            f"be having a wider outage — check https://status.cloud.google.com, "
+            f"otherwise this run will simply be retried at the next scheduled "
+            f"3-hour slot."
         ) from last_error
 
     script: VideoScript = response.parsed
