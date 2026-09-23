@@ -31,6 +31,12 @@ class VideoScript(BaseModel):
     title: str = Field(description="YouTube title, under 90 characters, includes the hook")
     description: str = Field(description="YouTube description, 2-3 sentences plus #Shorts")
     tags: List[str] = Field(description="8-12 relevant YouTube tags")
+    hashtags: List[str] = Field(
+        description="3-5 hashtags for the description, each starting with '#', no "
+        "spaces inside a tag (e.g. '#history', '#ScienceFacts'). Mix one or two broad "
+        "niche tags (e.g. '#facts', '#didyouknow') with two or three specific to this "
+        "video's topic. These are shown to viewers, so keep them relevant and readable."
+    )
     visual_keywords: List[str] = Field(
         description="3-5 concrete, literal search terms for stock background footage "
         "(e.g. 'ocean waves aerial', 'city street night'). Avoid abstract words."
