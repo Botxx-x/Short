@@ -52,9 +52,19 @@ def upload_short(
     title: str,
     description: str,
     tags: List[str],
+    hashtags: List[str] = None,
 ) -> str:
     """Uploads video_path as a Short. Returns the new video's ID."""
     youtube = _get_service()
+
+    # YouTube shows the first 3 hashtags it finds anywhere in the title or
+    # description ABOVE the video title (both web and app) — that's the
+    # visible slot viewers actually notice, separate from the invisible
+    # "tags" metadata field below. Putting them at the very start of the
+    # description (rather than the end) guarantees those 3 get picked.
+    if hashtags:
+        hashtag_line = " ".join(h if h.startswith("#") else f"#{h}" for h in hashtags)
+        description = f"{hashtag_line}\n\n{description}"
 
     # "#Shorts" in the title/description is the strongest programmatic
     # signal YouTube uses to route a vertical, <60s upload onto the
@@ -106,5 +116,6 @@ if __name__ == "__main__":
         title="Test upload — please ignore",
         description="Manual test upload from the pipeline.",
         tags=["test"],
+        hashtags=["#test"],
     )
     print(f"Uploaded: https://youtube.com/watch?v={video_id}")
