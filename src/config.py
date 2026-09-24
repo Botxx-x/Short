@@ -34,21 +34,29 @@ TOPICS_LOG = DATA_DIR / "used_topics.json"   # history, committed back to git
 # what this was originally set to, started returning 404 "no longer
 # available to new users" for newly-created API keys (confirmed by your
 # July 11 2026 run). script_gen.py tries these in order and automatically
-# falls through on that specific 404, so the next retirement doesn't take
-# the whole pipeline down with it:
-#   1. "gemini-flash-latest" — an alias Google keeps pointed at whatever
-#      its current recommended flash model is (currently Gemini 3.5
-#      Flash), so this should keep working across future retirements
-#      without any edits here.
-#   2. "gemini-3.5-flash" — that same current model, pinned directly, as
-#      a fallback in case the alias itself ever has an issue.
-# If BOTH of these ever fail, check
-# https://ai.google.dev/gemini-api/docs/models for the current lineup and
-# add a working name to this list.
+# falls through on that specific 404 (or retries on 429/500/503), so one
+# tier having issues doesn't take the whole pipeline down.
+#
+# Order is cheapest/fastest first, escalating only on failure:
+#   1. "gemini-flash-lite-latest" — cheapest/fastest tier, tried first.
+#   2. "gemini-flash-latest"      — the mid-tier alias, used if lite fails.
+#   3. "gemini-pro-latest"        — heaviest/most capable, last resort.
+# NOTE: verify these three exact ID strings against
+# https://ai.google.dev/gemini-api/docs/models before relying on this —
+# Google's aliases and pinned names shift over time (as the note above
+# describes), so treat this as a starting point, not a guarantee.
 GEMINI_MODEL_CANDIDATES = [
+    "gemini-flash-lite-latest",
     "gemini-flash-latest",
-    "gemini-3.5-flash",
+    "gemini-pro-latest",
 ]
+
+# How many past topics get fed back to Gemini as "don't repeat these."
+# Raised from 40 -> 150 since videos were repeating: at 40, anything
+# published more than ~40 runs ago had fully aged out of the dedup
+# window and became fair game again. Cheap to raise since it's just
+# extra prompt text.
+TOPIC_HISTORY_LIMIT = 150
 
 # Broad, algorithm-friendly pool. The script generator picks ONE angle per
 # video but always writes it in the same voice/format (see PROMPT below),
