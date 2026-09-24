@@ -6,6 +6,7 @@ structured JSON output.
 import json
 import random
 import time
+from difflib import SequenceMatcher
 from typing import List
 
 from google import genai
@@ -22,6 +23,16 @@ from . import config
 RETRYABLE_CODES = {429, 500, 503}
 MAX_RETRIES_PER_MODEL = 3
 RETRY_BACKOFF_SECONDS = [20, 40, 80]
+
+# How similar (0-1, via difflib's SequenceMatcher ratio) a new topic/title
+# can be to a past one before it's treated as a repeat and regenerated.
+# This is a cheap, offline text-similarity check — not semantic/embedding
+# based — so it catches near-identical wording but won't catch the same
+# fact described in totally different words. Good enough as a hard floor
+# on top of the "don't repeat these" prompt instruction, which was the
+# only thing doing this job before and could be ignored by the model.
+DUPLICATE_SIMILARITY_THRESHOLD = 0.6
+MAX_DUPLICATE_RETRIES = 3
 
 
 class VideoScript(BaseModel):
@@ -70,14 +81,19 @@ Voice and format rules (apply to every script, this is the channel's consistent 
   between videos, not just the topic."""
 
 
-def _load_recent_topics(limit: int = 40) -> List[str]:
+def _load_recent_topics(limit: int = None) -> List[dict]:
+    """Returns the most recent {topic, title} entries, most-recent-last.
+    Both fields are included (not just topic) so the model has enough
+    context to spot a reworded repeat, not just an exact-label match."""
+    if limit is None:
+        limit = config.TOPIC_HISTORY_LIMIT
     if not config.TOPICS_LOG.exists():
         return []
     try:
         history = json.loads(config.TOPICS_LOG.read_text())
     except (json.JSONDecodeError, OSError):
         return []
-    return [entry["topic"] for entry in history[-limit:]]
+    return history[-limit:]
 
 
 def _save_topic(topic: str, title: str) -> None:
@@ -92,8 +108,45 @@ def _save_topic(topic: str, title: str) -> None:
     config.TOPICS_LOG.write_text(json.dumps(history, indent=2))
 
 
-def generate_script() -> VideoScript:
-    """Calls Gemini and returns a fully-formed, structured video script.
+def _most_similar_past_entry(topic: str, title: str, history: List[dict]):
+    """Returns (entry, ratio) for the closest past topic/title match, or
+    (None, 0.0) if history is empty. Checks both fields since a repeat
+    might show up as a near-identical topic label, a near-identical
+    title, or both."""
+    best_entry, best_ratio = None, 0.0
+    topic_l, title_l = topic.lower(), title.lower()
+    for entry in history:
+        t_ratio = SequenceMatcher(None, topic_l, entry.get("topic", "").lower()).ratio()
+        h_ratio = SequenceMatcher(None, title_l, entry.get("title", "").lower()).ratio()
+        ratio = max(t_ratio, h_ratio)
+        if ratio > best_ratio:
+            best_entry, best_ratio = entry, ratio
+    return best_entry, best_ratio
+
+
+def _build_prompt(angle: str, avoid: List[dict]) -> str:
+    if avoid:
+        avoid_text = "\n".join(f"- {e['topic']}: {e['title']}" for e in avoid)
+    else:
+        avoid_text = "(none yet)"
+
+    return f"""Write one new video script.
+
+Angle for this video: {angle}
+
+Target length: {config.TARGET_SCRIPT_WORDS} words of spoken narration.
+
+Do NOT repeat any of these already-used topics, INCLUDING reworded or
+differently-framed versions of the same underlying fact or story (pick
+something genuinely different, not just a different sentence for the
+same idea):
+{avoid_text}
+
+Return the result matching the required JSON schema."""
+
+
+def _generate_once(prompt: str) -> VideoScript:
+    """Calls Gemini with the given prompt and returns a parsed VideoScript.
     Retries transient failures (server overload, rate limits) with backoff
     on the same model before giving up on it and trying the next candidate
     in GEMINI_MODEL_CANDIDATES."""
@@ -101,19 +154,6 @@ def generate_script() -> VideoScript:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
-    angle = random.choice(config.CONTENT_ANGLES)
-    recent = _load_recent_topics()
-
-    prompt = f"""Write one new video script.
-
-Angle for this video: {angle}
-
-Target length: {config.TARGET_SCRIPT_WORDS} words of spoken narration.
-
-Do NOT repeat any of these already-used topics (pick something genuinely different):
-{json.dumps(recent) if recent else "(none yet)"}
-
-Return the result matching the required JSON schema."""
 
     gen_config = types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
@@ -169,7 +209,41 @@ Return the result matching the required JSON schema."""
             f"3-hour slot."
         ) from last_error
 
-    script: VideoScript = response.parsed
+    return response.parsed
+
+
+def generate_script() -> VideoScript:
+    """Generates a video script, rejecting and regenerating (up to
+    MAX_DUPLICATE_RETRIES times) if the topic/title is too similar to a
+    recently-used one. Falls back to using the last candidate anyway if
+    it's still a near-duplicate after all retries, so a stubborn topic
+    can't stall the whole run."""
+    angle = random.choice(config.CONTENT_ANGLES)
+    history = _load_recent_topics()
+
+    # Grows with each rejected candidate this run, so a retry doesn't
+    # just regenerate the same near-duplicate again.
+    avoid = list(history)
+    script = None
+
+    for dup_attempt in range(MAX_DUPLICATE_RETRIES + 1):
+        prompt = _build_prompt(angle, avoid)
+        script = _generate_once(prompt)
+
+        match, ratio = _most_similar_past_entry(script.topic, script.title, history)
+        if ratio < DUPLICATE_SIMILARITY_THRESHOLD:
+            break
+
+        print(f"      (topic '{script.topic}' looks {ratio:.0%} similar to past "
+              f"video '{match['title']}' — regenerating, attempt "
+              f"{dup_attempt + 1}/{MAX_DUPLICATE_RETRIES})")
+        avoid.append({"topic": script.topic, "title": script.title})
+    else:
+        print("      (still looked like a duplicate after max retries — "
+              "using it anyway rather than stalling the run; consider "
+              "raising MAX_DUPLICATE_RETRIES or widening CONTENT_ANGLES "
+              "if this keeps happening)")
+
     _save_topic(script.topic, script.title)
     return script
 
