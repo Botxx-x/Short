@@ -43,7 +43,7 @@ def main() -> None:
 
         print("[5/5] Uploading to YouTube...")
         video_id = youtube_upload.upload_short(
-            final_path, script.title, script.description, script.tags
+            final_path, script.title, script.description, script.tags, script.hashtags
         )
         print(f"      done: https://youtube.com/watch?v={video_id}")
 
